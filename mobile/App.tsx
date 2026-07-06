@@ -1,44 +1,188 @@
-import { CalendarCheck, CircleCheck, Mail, Play, RefreshCcw, Settings, Smartphone } from "lucide-react-native";
-import { useMemo, useState } from "react";
-import { Alert, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from "react-native";
+import { CalendarCheck, CircleCheck, Link, Mail, Play, RefreshCcw, Settings, Smartphone } from "lucide-react-native";
 import { StatusBar } from "expo-status-bar";
+import * as Google from "expo-auth-session/providers/google";
+import * as WebBrowser from "expo-web-browser";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Alert, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { runSampleSync } from "./src/core/sampleSync";
+import { appConfig, GOOGLE_SCOPES, hasGoogleCredentials } from "./src/config/appConfig";
+import { runMobileSync } from "./src/core/mobileSync";
 import type { CalendarProvider, EmailProvider, SyncLogEntry } from "./src/core/types";
+import { ensureDeviceCalendar } from "./src/providers/deviceCalendar";
+import { isGoogleTokenUsable, loadGoogleToken, saveGoogleToken, type StoredGoogleToken } from "./src/storage/secureTokens";
+
+WebBrowser.maybeCompleteAuthSession();
 
 const emailOptions: Array<{ value: EmailProvider; label: string; description: string }> = [
-  { value: "microsoft", label: "Outlook / Microsoft", description: "Use Microsoft Graph for Outlook.com or Microsoft 365." },
-  { value: "gmail", label: "Gmail", description: "Use native Google sign-in for Gmail." },
-  { value: "imap", label: "iCloud / IMAP", description: "Use email address plus provider app password." },
+  { value: "gmail", label: "Gmail", description: "Sign in with Google to read Wellpass emails." },
+  { value: "microsoft", label: "Outlook", description: "Microsoft mobile sign-in is planned after the Google release path." },
+  { value: "imap", label: "Other email", description: "IMAP is supported on desktop; mobile password flow is planned." },
 ];
 
 const calendarOptions: Array<{ value: CalendarProvider; label: string; description: string }> = [
-  { value: "icloud", label: "iCloud Calendar", description: "Use Apple app-specific password and CalDAV." },
-  { value: "google", label: "Google Calendar", description: "Use Google sign-in and Calendar API." },
-  { value: "outlook", label: "Outlook Calendar", description: "Use Microsoft Graph calendar access." },
+  {
+    value: "device",
+    label: "Phone Calendar",
+    description: "Writes to calendars already on this phone. On iPhone, this includes iCloud calendars.",
+  },
+  { value: "google", label: "Google Calendar", description: "Sign in with Google and choose or create a calendar." },
+  { value: "outlook", label: "Outlook Calendar", description: "Microsoft mobile calendar sync is planned after Google." },
 ];
 
 export default function App() {
-  const [emailProvider, setEmailProvider] = useState<EmailProvider>("microsoft");
-  const [calendarProvider, setCalendarProvider] = useState<CalendarProvider>("icloud");
+  const [emailProvider, setEmailProvider] = useState<EmailProvider>("gmail");
+  const [calendarProvider, setCalendarProvider] = useState<CalendarProvider>("device");
   const [calendarName, setCalendarName] = useState("Wellpass");
+  const [googleToken, setGoogleToken] = useState<StoredGoogleToken | null>(null);
+  const [busy, setBusy] = useState(false);
   const [logs, setLogs] = useState<SyncLogEntry[]>([
     { level: "info", message: "Choose accounts, then run a test before syncing." },
   ]);
 
+  const [googleRequest, googleResponse, promptGoogleAuth] = Google.useAuthRequest(
+    {
+      androidClientId: appConfig.google.androidClientId,
+      iosClientId: appConfig.google.iosClientId,
+      webClientId: appConfig.google.webClientId,
+      scopes: GOOGLE_SCOPES,
+      selectAccount: true,
+    },
+    { scheme: "wellpasssync" },
+  );
+
+  useEffect(() => {
+    void loadGoogleToken().then((token) => {
+      if (isGoogleTokenUsable(token)) {
+        setGoogleToken(token);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!googleResponse) {
+      return;
+    }
+
+    if (googleResponse.type === "success") {
+      const auth = googleResponse.authentication;
+      if (!auth?.accessToken) {
+        appendLog({ level: "error", message: "Google sign-in finished without an access token." });
+        return;
+      }
+
+      const token: StoredGoogleToken = {
+        accessToken: auth.accessToken,
+        issuedAt: auth.issuedAt,
+        expiresIn: auth.expiresIn,
+        refreshToken: auth.refreshToken,
+        scope: auth.scope,
+      };
+      void saveGoogleToken(token).then(() => {
+        setGoogleToken(token);
+        appendLog({ level: "success", message: "Google connected." });
+      });
+    } else if (googleResponse.type === "error") {
+      appendLog({ level: "error", message: "Google sign-in failed." });
+    } else if (googleResponse.type === "cancel" || googleResponse.type === "dismiss") {
+      appendLog({ level: "warning", message: "Google sign-in was cancelled." });
+    }
+  }, [googleResponse]);
+
   const selectedEmail = useMemo(() => emailOptions.find((option) => option.value === emailProvider)!, [emailProvider]);
   const selectedCalendar = useMemo(() => calendarOptions.find((option) => option.value === calendarProvider)!, [calendarProvider]);
+  const googleConnected = isGoogleTokenUsable(googleToken);
 
-  function connect(kind: "email" | "calendar") {
-    const label = kind === "email" ? selectedEmail.label : selectedCalendar.label;
-    Alert.alert(
-      "Connection setup",
-      `${label} is selected. OAuth and secure password storage are scaffolded for the mobile app, but real provider credentials still need to be configured before public mobile release.`,
-    );
+  function appendLog(entry: SyncLogEntry) {
+    setLogs((current) => [entry, ...current].slice(0, 40));
   }
 
-  function runTest(write: boolean) {
-    setLogs(runSampleSync(write));
+  async function connect(kind: "email" | "calendar") {
+    if ((kind === "email" && emailProvider === "gmail") || (kind === "calendar" && calendarProvider === "google")) {
+      await connectGoogle();
+      return;
+    }
+
+    if (kind === "calendar" && calendarProvider === "device") {
+      await connectDeviceCalendar();
+      return;
+    }
+
+    Alert.alert("Not ready on mobile yet", `${kind === "email" ? selectedEmail.label : selectedCalendar.label} works on desktop today. Mobile support is next.`);
+  }
+
+  async function connectGoogle() {
+    if (!hasGoogleCredentials()) {
+      Alert.alert("Google setup missing", "Add the Google OAuth client IDs to mobile/.env before signing in.");
+      appendLog({ level: "error", message: "Google OAuth client IDs are not configured." });
+      return;
+    }
+    if (!googleRequest) {
+      appendLog({ level: "warning", message: "Google sign-in is still loading. Try again in a moment." });
+      return;
+    }
+
+    try {
+      await promptGoogleAuth();
+    } catch (error) {
+      appendLog({ level: "error", message: error instanceof Error ? error.message : "Google sign-in could not start." });
+    }
+  }
+
+  async function connectDeviceCalendar() {
+    setBusy(true);
+    try {
+      const calendar = await ensureDeviceCalendar(calendarName);
+      appendLog({ level: "success", message: `Phone calendar ready: ${calendar.title}` });
+    } catch (error) {
+      appendLog({ level: "error", message: error instanceof Error ? error.message : "Calendar access failed." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runSync(write: boolean) {
+    if (!write) {
+      await executeSync(false);
+      return;
+    }
+
+    if (emailProvider !== "gmail") {
+      Alert.alert("Email not ready", "Real mobile sync currently needs Gmail connected. Outlook and IMAP remain desktop paths for now.");
+      return;
+    }
+    if (!googleConnected) {
+      Alert.alert("Connect Gmail first", "Sign in with Google before writing calendar events.");
+      return;
+    }
+    if (calendarProvider === "google" && !googleConnected) {
+      Alert.alert("Connect Google Calendar first", "Sign in with Google before writing to Google Calendar.");
+      return;
+    }
+    if (calendarProvider === "outlook") {
+      Alert.alert("Outlook Calendar not ready", "Outlook Calendar works on desktop today. Mobile support is planned after the Google path.");
+      return;
+    }
+
+    await executeSync(true);
+  }
+
+  async function executeSync(write: boolean) {
+    setBusy(true);
+    setLogs([{ level: "info", message: write ? "Sync started." : "Test run started." }]);
+    try {
+      const nextLogs = await runMobileSync({
+        dryRun: !write,
+        emailProvider,
+        calendarProvider,
+        calendarName,
+        googleAccessToken: googleToken?.accessToken,
+      });
+      setLogs(nextLogs);
+    } catch (error) {
+      setLogs([{ level: "error", message: error instanceof Error ? error.message : "Sync failed." }]);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -51,27 +195,18 @@ export default function App() {
           </View>
           <View style={styles.headerText}>
             <Text style={styles.title}>Wellpass Calendar Sync</Text>
-            <Text style={styles.subtitle}>iPhone and Android preview</Text>
+            <Text style={styles.subtitle}>iPhone and Android</Text>
           </View>
         </View>
 
-        <StepCard
-          number="1"
-          title="Wellpass emails"
-          icon={<Mail color="#0f766e" size={22} />}
-          description="Choose the account where Wellpass emails arrive."
-        >
+        <StepCard number="1" title="Wellpass emails" icon={<Mail color="#0f766e" size={22} />} description="Choose the account where Wellpass emails arrive.">
           <SegmentedOptions options={emailOptions} value={emailProvider} onChange={setEmailProvider} />
           <Text style={styles.helper}>{selectedEmail.description}</Text>
-          <PrimaryButton label="Connect email account" icon={<CircleCheck color="#ffffff" size={18} />} onPress={() => connect("email")} />
+          <ConnectionStatus connected={emailProvider === "gmail" && googleConnected} label={emailProvider === "gmail" ? "Google" : selectedEmail.label} />
+          <PrimaryButton label="Connect email" icon={<CircleCheck color="#ffffff" size={18} />} disabled={busy} onPress={() => void connect("email")} />
         </StepCard>
 
-        <StepCard
-          number="2"
-          title="Calendar"
-          icon={<CalendarCheck color="#b91c1c" size={22} />}
-          description="Choose where workout events should appear."
-        >
+        <StepCard number="2" title="Calendar" icon={<CalendarCheck color="#b91c1c" size={22} />} description="Choose where workout events should appear.">
           <SegmentedOptions options={calendarOptions} value={calendarProvider} onChange={setCalendarProvider} />
           <Text style={styles.helper}>{selectedCalendar.description}</Text>
           <View style={styles.calendarRow}>
@@ -85,18 +220,14 @@ export default function App() {
               </Pressable>
             </View>
           </View>
-          <PrimaryButton label="Connect calendar account" icon={<CircleCheck color="#ffffff" size={18} />} onPress={() => connect("calendar")} />
+          <ConnectionStatus connected={calendarProvider === "device" || (calendarProvider === "google" && googleConnected)} label={selectedCalendar.label} />
+          <PrimaryButton label="Connect calendar" icon={<CircleCheck color="#ffffff" size={18} />} disabled={busy} onPress={() => void connect("calendar")} />
         </StepCard>
 
-        <StepCard
-          number="3"
-          title="Test and sync"
-          icon={<Play color="#1d4ed8" size={22} />}
-          description="Run a test first. Sync writes only after providers are connected."
-        >
+        <StepCard number="3" title="Test and sync" icon={<Play color="#1d4ed8" size={22} />} description="Test run reads mail but does not change your calendar.">
           <View style={styles.actionRow}>
-            <PrimaryButton label="Test run" icon={<RefreshCcw color="#ffffff" size={18} />} onPress={() => runTest(false)} />
-            <SecondaryButton label="Sync now" icon={<Play color="#1f2937" size={18} />} onPress={() => runTest(true)} />
+            <PrimaryButton label="Test run" icon={<RefreshCcw color="#ffffff" size={18} />} disabled={busy} onPress={() => void runSync(false)} />
+            <SecondaryButton label="Sync now" icon={<Play color="#1f2937" size={18} />} disabled={busy} onPress={() => void runSync(true)} />
           </View>
         </StepCard>
 
@@ -117,19 +248,7 @@ export default function App() {
   );
 }
 
-function StepCard({
-  number,
-  title,
-  icon,
-  description,
-  children,
-}: {
-  number: string;
-  title: string;
-  icon: React.ReactNode;
-  description: string;
-  children: React.ReactNode;
-}) {
+function StepCard({ number, title, icon, description, children }: { number: string; title: string; icon: ReactNode; description: string; children: ReactNode }) {
   return (
     <View style={styles.card}>
       <View style={styles.cardHeader}>
@@ -147,15 +266,7 @@ function StepCard({
   );
 }
 
-function SegmentedOptions<T extends string>({
-  options,
-  value,
-  onChange,
-}: {
-  options: Array<{ value: T; label: string }>;
-  value: T;
-  onChange: (value: T) => void;
-}) {
+function SegmentedOptions<T extends string>({ options, value, onChange }: { options: Array<{ value: T; label: string }>; value: T; onChange: (value: T) => void }) {
   return (
     <View style={styles.segmented}>
       {options.map((option) => {
@@ -170,18 +281,27 @@ function SegmentedOptions<T extends string>({
   );
 }
 
-function PrimaryButton({ label, icon, onPress }: { label: string; icon: React.ReactNode; onPress: () => void }) {
+function ConnectionStatus({ connected, label }: { connected: boolean; label: string }) {
   return (
-    <Pressable style={styles.primaryButton} onPress={onPress}>
+    <View style={styles.statusRow}>
+      <Link color={connected ? "#0f766e" : "#6b7280"} size={16} />
+      <Text style={[styles.statusText, connected && styles.statusTextConnected]}>{connected ? `${label} ready` : `${label} not connected`}</Text>
+    </View>
+  );
+}
+
+function PrimaryButton({ label, icon, disabled, onPress }: { label: string; icon: ReactNode; disabled?: boolean; onPress: () => void }) {
+  return (
+    <Pressable style={[styles.primaryButton, disabled && styles.buttonDisabled]} disabled={disabled} onPress={onPress}>
       {icon}
       <Text style={styles.primaryButtonText}>{label}</Text>
     </Pressable>
   );
 }
 
-function SecondaryButton({ label, icon, onPress }: { label: string; icon: React.ReactNode; onPress: () => void }) {
+function SecondaryButton({ label, icon, disabled, onPress }: { label: string; icon: ReactNode; disabled?: boolean; onPress: () => void }) {
   return (
-    <Pressable style={styles.secondaryButton} onPress={onPress}>
+    <Pressable style={[styles.secondaryButton, disabled && styles.buttonDisabled]} disabled={disabled} onPress={onPress}>
       {icon}
       <Text style={styles.secondaryButtonText}>{label}</Text>
     </Pressable>
@@ -261,45 +381,63 @@ const styles = StyleSheet.create({
   },
   cardDescription: {
     color: "#4b5563",
-    fontSize: 14,
+    fontSize: 13,
+    lineHeight: 18,
     marginTop: 2,
-  },
-  segmented: {
-    borderColor: "#cad5e2",
-    borderRadius: 8,
-    borderWidth: 1,
-    overflow: "hidden",
-  },
-  segment: {
-    backgroundColor: "#ffffff",
-    borderBottomColor: "#cad5e2",
-    borderBottomWidth: 1,
-    minHeight: 44,
-    justifyContent: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  segmentSelected: {
-    backgroundColor: "#0f766e",
-  },
-  segmentText: {
-    color: "#1f2937",
-    fontSize: 15,
-    fontWeight: "600",
-  },
-  segmentTextSelected: {
-    color: "#ffffff",
   },
   helper: {
     color: "#374151",
     fontSize: 14,
     lineHeight: 20,
   },
+  segmented: {
+    backgroundColor: "#eef2f7",
+    borderRadius: 8,
+    flexDirection: "row",
+    gap: 4,
+    padding: 4,
+  },
+  segment: {
+    alignItems: "center",
+    borderRadius: 6,
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 42,
+    paddingHorizontal: 6,
+  },
+  segmentSelected: {
+    backgroundColor: "#ffffff",
+    shadowColor: "#111827",
+    shadowOpacity: 0.08,
+    shadowRadius: 5,
+  },
+  segmentText: {
+    color: "#4b5563",
+    fontSize: 12,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  segmentTextSelected: {
+    color: "#111827",
+  },
+  statusRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  statusText: {
+    color: "#6b7280",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  statusTextConnected: {
+    color: "#0f766e",
+  },
   calendarRow: {
     gap: 8,
   },
   calendarLabel: {
-    color: "#374151",
+    color: "#111827",
     fontSize: 14,
     fontWeight: "700",
   },
@@ -308,7 +446,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   chip: {
-    borderColor: "#cad5e2",
+    borderColor: "#cbd5e1",
     borderRadius: 999,
     borderWidth: 1,
     paddingHorizontal: 14,
@@ -320,14 +458,14 @@ const styles = StyleSheet.create({
   },
   chipText: {
     color: "#374151",
+    fontSize: 14,
     fontWeight: "700",
   },
   chipTextSelected: {
-    color: "#b91c1c",
+    color: "#991b1b",
   },
   actionRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: 10,
   },
   primaryButton: {
@@ -336,9 +474,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     flexDirection: "row",
     gap: 8,
+    justifyContent: "center",
     minHeight: 46,
     paddingHorizontal: 14,
-    paddingVertical: 11,
   },
   primaryButtonText: {
     color: "#ffffff",
@@ -347,33 +485,35 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     alignItems: "center",
-    backgroundColor: "#ffffff",
-    borderColor: "#cad5e2",
+    backgroundColor: "#e5e7eb",
     borderRadius: 8,
-    borderWidth: 1,
+    flex: 1,
     flexDirection: "row",
     gap: 8,
+    justifyContent: "center",
     minHeight: 46,
     paddingHorizontal: 14,
-    paddingVertical: 11,
   },
   secondaryButtonText: {
     color: "#1f2937",
     fontSize: 15,
     fontWeight: "700",
   },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
   logPanel: {
     backgroundColor: "#ffffff",
     borderColor: "#d9e1ea",
     borderRadius: 8,
     borderWidth: 1,
+    gap: 10,
     padding: 14,
   },
   logHeader: {
     alignItems: "center",
     flexDirection: "row",
     gap: 8,
-    marginBottom: 10,
   },
   logTitle: {
     color: "#111827",
@@ -384,19 +524,18 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     flexDirection: "row",
     gap: 8,
-    paddingVertical: 6,
   },
   logDot: {
-    borderRadius: 999,
+    borderRadius: 99,
     height: 8,
     marginTop: 6,
     width: 8,
   },
   logDot_info: {
-    backgroundColor: "#3b82f6",
+    backgroundColor: "#2563eb",
   },
   logDot_success: {
-    backgroundColor: "#16a34a",
+    backgroundColor: "#0f766e",
   },
   logDot_warning: {
     backgroundColor: "#f59e0b",

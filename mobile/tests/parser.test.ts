@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { base64UrlDecode, parseGmailEmailsForPreview } from "../src/providers/googleApi";
 import { parseBookingEmail, sourceEmailFromRaw } from "../src/core/parser";
 import { runSampleSync } from "../src/core/sampleSync";
 
@@ -58,5 +59,25 @@ Your cancellation is confirmed.
     expect(logs.some((line) => line.startsWith("Would add: Mobility Yoga"))).toBe(true);
     expect(logs.some((line) => line.startsWith("Would remove: Mobility Yoga"))).toBe(true);
     expect(logs).toContain("Test run only. Your calendar was not changed.");
+  });
+
+  it("decodes Gmail raw messages and parses them for preview", () => {
+    const raw = `From: Wellpass <noreply-de@egym-wellpass.com>
+Subject: Booking Confirmed: Flow at Studio
+Message-ID: <gmail-example>
+
+Booking ID: WB-987
+Booked: Flow
+Studio: Studio
+Date: July 3, 2026
+Time: 09:00 - 10:00
+`;
+    const encoded = btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const decoded = base64UrlDecode(encoded);
+    const events = parseGmailEmailsForPreview([sourceEmailFromRaw(decoded)]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.title).toBe("Flow");
+    expect(events[0]?.startAt).toBe("2026-07-03T09:00:00+02:00");
   });
 });

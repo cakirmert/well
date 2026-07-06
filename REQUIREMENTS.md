@@ -21,12 +21,13 @@
 - Dedicated `Wellpass` calendar to avoid polluting the main calendar.
 - Clear logs for created, updated, skipped, and canceled events.
 - Safe handling of timezones, defaulting to `Europe/Berlin`.
-- Mobile app shell for iPhone and Android with the same setup-first flow.
+- Mobile app for iPhone and Android with the same setup-first flow.
+- Mobile Gmail, Google Calendar, and native phone-calendar paths.
 
 ## Could Have Later
 
 - Tray icon with background status.
-- Fully connected iPhone and Android provider adapters.
+- Mobile Microsoft Outlook and generic IMAP provider adapters.
 - App Store and Play Store releases.
 - Wellpass login integration if email parsing is insufficient.
 - Background tray app.

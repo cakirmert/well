@@ -1,7 +1,7 @@
 export type BookingStatus = "confirmed" | "cancelled";
 
 export type EmailProvider = "microsoft" | "gmail" | "imap";
-export type CalendarProvider = "icloud" | "google" | "outlook";
+export type CalendarProvider = "device" | "google" | "outlook";
 
 export interface SourceEmail {
   messageId: string;

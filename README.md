@@ -44,13 +44,16 @@ Current mobile status:
 - Expo app for iOS and Android.
 - Same setup-first flow as desktop.
 - Mobile parser and sample sync log are implemented and tested.
+- Gmail and Google Calendar adapters are wired for OAuth client IDs.
+- Phone Calendar target is wired for iOS/Android calendar permission. On iPhone, this can write to iCloud calendars already configured on the phone.
 - EAS build profiles are included for Android and iOS.
 
 Not released to App Store or Play Store yet:
 
 - iOS release builds need an Apple Developer account and signing credentials.
 - Android release builds need a signing key and Play Console setup.
-- Real mobile provider adapters still need OAuth client IDs for Google and Microsoft.
+- Public Gmail access may need Google OAuth verification because Gmail read access is a restricted scope.
+- Microsoft Outlook and generic IMAP mobile adapters are still planned.
 - iOS background sync is best-effort. Desktop scheduling remains more reliable for automatic sync.
 
 ## First Setup
@@ -133,7 +136,7 @@ For iCloud Calendar, use an Apple app-specific password, not your normal Apple A
 
 For Outlook.com / Microsoft 365, use `Sign in with Microsoft`.
 
-For Gmail or Google Calendar, use `Sign in with Google`. A Google Desktop OAuth client JSON is required for now. For a public release, the app maintainer should provide a configured OAuth client flow so regular users do not have to create their own Google Cloud project.
+For Gmail or Google Calendar, use `Sign in with Google`. The desktop app can use a local OAuth client JSON. The mobile app uses iOS and Android OAuth client IDs configured through `mobile/.env` before building.
 
 ## Safe Defaults
 
@@ -173,6 +176,14 @@ npm install
 npm run test
 npm run typecheck
 npm run start
+```
+
+Mobile store builds use EAS:
+
+```bash
+cd mobile
+npx eas build --platform android --profile production
+npx eas build --platform ios --profile production
 ```
 
 ## Tests

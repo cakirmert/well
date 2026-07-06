@@ -29,3 +29,7 @@ export function runSampleSync(write: boolean): SyncLogEntry[] {
   });
   return logs;
 }
+
+export async function runSampleSyncAsync(write: boolean): Promise<SyncLogEntry[]> {
+  return runSampleSync(write);
+}
