@@ -21,10 +21,13 @@
 - Dedicated `Wellpass` calendar to avoid polluting the main calendar.
 - Clear logs for created, updated, skipped, and canceled events.
 - Safe handling of timezones, defaulting to `Europe/Berlin`.
+- Mobile app shell for iPhone and Android with the same setup-first flow.
 
 ## Could Have Later
 
 - Tray icon with background status.
+- Fully connected iPhone and Android provider adapters.
+- App Store and Play Store releases.
 - Wellpass login integration if email parsing is insufficient.
 - Background tray app.
 - Hosted server version.
@@ -33,6 +36,7 @@
 
 - Scraping the Wellpass app or website.
 - Running on a public server.
+- Claiming reliable iOS background scheduling before real-device testing.
 - Handling every possible studio email format before real examples are provided.
 - Storing plain credentials in source code.
 

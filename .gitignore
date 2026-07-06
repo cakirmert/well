@@ -19,6 +19,16 @@ dist/
 *.egg-info/
 *.spec
 
+# Node / mobile
+node_modules/
+mobile/node_modules/
+mobile/.expo/
+mobile/.expo-shared/
+mobile/android/
+mobile/ios/
+mobile/dist/
+mobile/coverage/
+
 # Local runtime state
 data/
 exports/

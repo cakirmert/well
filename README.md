@@ -35,6 +35,24 @@ On Windows, unzip the file and open `WellpassCalendarSync.exe`.
 
 On macOS, unzip the file and open the included app or executable. If macOS blocks it because it is not notarized yet, right-click it and choose `Open`.
 
+## Mobile App
+
+The iPhone and Android app source lives in [`mobile`](mobile/).
+
+Current mobile status:
+
+- Expo app for iOS and Android.
+- Same setup-first flow as desktop.
+- Mobile parser and sample sync log are implemented and tested.
+- EAS build profiles are included for Android and iOS.
+
+Not released to App Store or Play Store yet:
+
+- iOS release builds need an Apple Developer account and signing credentials.
+- Android release builds need a signing key and Play Console setup.
+- Real mobile provider adapters still need OAuth client IDs for Google and Microsoft.
+- iOS background sync is best-effort. Desktop scheduling remains more reliable for automatic sync.
+
 ## First Setup
 
 1. Open the app.
@@ -146,6 +164,16 @@ python tools/build_executable.py
 ```
 
 Builds are OS-specific. Build on Windows for a Windows executable, macOS for a macOS artifact, and Linux for a Linux artifact.
+
+Mobile app:
+
+```bash
+cd mobile
+npm install
+npm run test
+npm run typecheck
+npm run start
+```
 
 ## Tests
 
