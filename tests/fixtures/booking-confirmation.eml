@@ -1,0 +1,15 @@
+From: Wellpass Booking <booking@egym-wellpass.example>
+To: user@example.com
+Subject: Booking confirmation: Mobility Yoga
+Date: Tue, 30 Jun 2026 10:00:00 +0200
+Message-ID: <booking-confirmation-1@example>
+Content-Type: text/plain; charset=utf-8
+
+Your booking is confirmed.
+
+Booking ID: WB-12345
+Class: Mobility Yoga
+Studio: Urban Sports Studio
+Date: 02.07.2026
+Time: 18:30 - 19:30
+Location: Mainzer Str. 1, 10115 Berlin

@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wellpass-calendar-sync"
+version = "0.1.0"
+description = "Cross-platform Wellpass booking email to calendar sync"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Mert Cakir" },
+]
+keywords = ["wellpass", "calendar", "icloud", "caldav", "outlook", "microsoft-graph"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: MacOS X",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "caldav>=1.4.0",
+    "google-api-python-client>=2.150.0",
+    "google-auth-oauthlib>=1.2.0",
+    "keyring>=25.0.0",
+    "msal>=1.31.0",
+    "pywin32>=306; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+packaging = [
+    "pyinstaller>=6",
+]
+
+[project.scripts]
+wellpass-sync = "wellpass_sync.__main__:main"
+wellpass-sync-gui = "wellpass_sync.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["wellpass_sync*"]

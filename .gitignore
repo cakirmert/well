@@ -1,0 +1,33 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+NEXT_CHAT_PROMPT.md
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Local runtime state
+data/
+exports/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Editors and OS noise
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
