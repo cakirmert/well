@@ -8,6 +8,34 @@ from .secrets import get_secret
 
 MICROSOFT_GRAPH_COMMAND_LINE_TOOLS_CLIENT_ID = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
 
+CONFIG_VALUE_KEYS = (
+    "TIMEZONE",
+    "EMAIL_PROVIDER",
+    "EMAIL_SENDER_HINTS",
+    "SEARCH_SINCE_DAYS",
+    "IMAP_MAX_MESSAGES",
+    "IMAP_PROVIDER",
+    "IMAP_HOST",
+    "IMAP_PORT",
+    "IMAP_USERNAME",
+    "IMAP_FOLDER",
+    "GRAPH_CLIENT_ID",
+    "GRAPH_TENANT",
+    "GRAPH_SCOPES",
+    "GRAPH_TOKEN_CACHE",
+    "GOOGLE_CLIENT_SECRETS_PATH",
+    "GOOGLE_TOKEN_CACHE",
+    "CALENDAR_PROVIDER",
+    "CALENDAR_NAME",
+    "CALDAV_URL",
+    "ICLOUD_USERNAME",
+    "CALENDAR_REMINDER_MINUTES",
+    "DATABASE_PATH",
+    "ICS_EXPORT_DIR",
+    "TASK_NAME",
+    "TASK_INTERVAL_MINUTES",
+)
+
 
 def _parse_env_file(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
@@ -160,6 +188,12 @@ def load_config(env_path: str | Path = ".env") -> AppConfig:
     path = Path(env_path).expanduser()
     base_dir = path.resolve().parent
     values = _parse_env_file(path)
+    return load_config_from_values(values, base_dir=base_dir, env_path=path)
+
+
+def load_config_from_values(values: dict[str, str], base_dir: str | Path, env_path: str | Path | None = None) -> AppConfig:
+    base_dir = Path(base_dir).expanduser().resolve()
+    path = Path(env_path).expanduser() if env_path else base_dir / "Credential Manager"
 
     database_path = _config_path(
         _get(values, "DATABASE_PATH"),
@@ -230,6 +264,39 @@ def load_config(env_path: str | Path = ".env") -> AppConfig:
         task_name=_get(values, "TASK_NAME", "Wellpass Calendar Sync"),
         task_interval_minutes=_int(_get(values, "TASK_INTERVAL_MINUTES", "30"), 30),
     )
+
+
+def config_to_values(config: AppConfig, absolute_paths: bool = False) -> dict[str, str]:
+    def path_value(path: Path) -> str:
+        return str(path.resolve()) if absolute_paths else str(path)
+
+    return {
+        "TIMEZONE": config.timezone,
+        "EMAIL_PROVIDER": config.email_provider,
+        "EMAIL_SENDER_HINTS": ",".join(config.email_sender_hints),
+        "SEARCH_SINCE_DAYS": str(config.search_since_days),
+        "IMAP_MAX_MESSAGES": str(config.imap_max_messages),
+        "IMAP_PROVIDER": config.imap_provider,
+        "IMAP_HOST": config.imap_host,
+        "IMAP_PORT": str(config.imap_port),
+        "IMAP_USERNAME": config.imap_username,
+        "IMAP_FOLDER": config.imap_folder,
+        "GRAPH_CLIENT_ID": "" if config.graph_client_id == MICROSOFT_GRAPH_COMMAND_LINE_TOOLS_CLIENT_ID else config.graph_client_id,
+        "GRAPH_TENANT": config.graph_tenant,
+        "GRAPH_SCOPES": ",".join(config.graph_scopes),
+        "GRAPH_TOKEN_CACHE": path_value(config.graph_token_cache),
+        "GOOGLE_CLIENT_SECRETS_PATH": path_value(config.google_client_secrets_path),
+        "GOOGLE_TOKEN_CACHE": path_value(config.google_token_cache),
+        "CALENDAR_PROVIDER": config.calendar_provider,
+        "CALENDAR_NAME": config.calendar_name,
+        "CALDAV_URL": config.caldav_url,
+        "ICLOUD_USERNAME": config.icloud_username,
+        "CALENDAR_REMINDER_MINUTES": ",".join(str(value) for value in config.reminder_minutes),
+        "DATABASE_PATH": path_value(config.database_path),
+        "ICS_EXPORT_DIR": path_value(config.ics_export_dir),
+        "TASK_NAME": config.task_name,
+        "TASK_INTERVAL_MINUTES": str(config.task_interval_minutes),
+    }
 
 
 def _default_imap_host(imap_provider: str, username: str) -> str:

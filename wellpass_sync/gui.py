@@ -4,18 +4,20 @@ import contextlib
 import io
 import queue
 import re
+import sys
 import threading
 import webbrowser
 from datetime import datetime
 from pathlib import Path
 
-from .app_paths import ensure_default_env_file
+from .app_paths import default_env_path, ensure_default_env_file
 from .calendar import calendar_exists, list_calendar_names
-from .config import load_config
+from .config import CONFIG_VALUE_KEYS, load_config
 from .google_auth import GMAIL_READ_SCOPE, GOOGLE_CALENDAR_SCOPE, get_google_credentials
 from .graph_mail import get_graph_access_token
 from .scheduler import install_task, uninstall_task
-from .secrets import set_secret
+from .secrets import get_secret, set_secret
+from .settings_store import import_env_to_store, load_stored_config, save_stored_settings, settings_base_dir, stored_settings_exist
 from .sync import SyncOptions, run_sync
 
 
@@ -40,7 +42,19 @@ def run_gui(env_path: str | Path | None = None) -> int:
     except ImportError as exc:
         raise RuntimeError("The GUI requires tkinter. Install a Python distribution that includes Tcl/Tk.") from exc
 
-    app = _GuiApp(tk, ttk, scrolledtext, filedialog, messagebox, ensure_default_env_file(env_path))
+    use_stored_settings = env_path is None
+    imported_env_path = _bootstrap_stored_settings() if use_stored_settings else None
+    resolved_env_path = None if use_stored_settings else ensure_default_env_file(env_path)
+    app = _GuiApp(
+        tk,
+        ttk,
+        scrolledtext,
+        filedialog,
+        messagebox,
+        resolved_env_path,
+        use_stored_settings=use_stored_settings,
+        imported_env_path=imported_env_path,
+    )
     app.run()
     return 0
 
@@ -49,14 +63,55 @@ def main() -> int:
     return run_gui()
 
 
+def _bootstrap_stored_settings() -> Path | None:
+    if stored_settings_exist():
+        return None
+
+    for candidate in _env_import_candidates():
+        if candidate.exists():
+            import_env_to_store(candidate)
+            return candidate
+    return None
+
+
+def _env_import_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.extend([exe_dir / ".env", exe_dir.parent / ".env"])
+    candidates.extend([Path.cwd() / ".env", default_env_path()])
+
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(resolved)
+    return unique
+
+
 class _GuiApp:
-    def __init__(self, tk, ttk, scrolledtext, filedialog, messagebox, env_path: Path) -> None:
+    def __init__(
+        self,
+        tk,
+        ttk,
+        scrolledtext,
+        filedialog,
+        messagebox,
+        env_path: Path | None,
+        *,
+        use_stored_settings: bool,
+        imported_env_path: Path | None,
+    ) -> None:
         self.tk = tk
         self.ttk = ttk
         self.scrolledtext = scrolledtext
         self.filedialog = filedialog
         self.messagebox = messagebox
         self.env_path = env_path
+        self.use_stored_settings = use_stored_settings
+        self.imported_env_path = imported_env_path
         self.log_queue: queue.Queue[str] = queue.Queue()
 
         self.root = tk.Tk()
@@ -97,6 +152,7 @@ class _GuiApp:
             "IMAP_SECRET": tk.StringVar(value=""),
         }
         self.status_var = tk.StringVar(value="Ready")
+        self.settings_summary_var = tk.StringVar(value="")
         self.email_help_var = tk.StringVar()
         self.calendar_help_var = tk.StringVar()
         self.scheduler_stop = threading.Event()
@@ -104,6 +160,8 @@ class _GuiApp:
 
         self._build()
         self._load_env_into_form()
+        if self.imported_env_path:
+            self._log(f"Imported setup from {self.imported_env_path} into Credential Manager.")
         self._poll_log_queue()
 
     def run(self) -> None:
@@ -142,9 +200,15 @@ class _GuiApp:
             wraplength=760,
         )
         subtitle.grid(row=1, column=0, sticky="ew", pady=(4, 14))
+        self.ttk.Label(parent, textvariable=self.settings_summary_var, wraplength=760).grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            pady=(0, 14),
+        )
 
         email = self.ttk.LabelFrame(parent, text="1. Wellpass emails", padding=12)
-        email.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        email.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         email.columnconfigure(1, weight=1)
         self.ttk.Label(email, text="Email account").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
         self.email_provider_combo = self.ttk.Combobox(
@@ -178,7 +242,7 @@ class _GuiApp:
         )
 
         calendar = self.ttk.LabelFrame(parent, text="2. Calendar", padding=12)
-        calendar.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        calendar.grid(row=4, column=0, sticky="ew", pady=(0, 12))
         calendar.columnconfigure(1, weight=1)
         self.ttk.Label(calendar, text="Calendar account").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
         self.calendar_provider_combo = self.ttk.Combobox(
@@ -231,7 +295,7 @@ class _GuiApp:
         )
 
         ready = self.ttk.LabelFrame(parent, text="3. Test and sync", padding=12)
-        ready.grid(row=4, column=0, sticky="ew")
+        ready.grid(row=5, column=0, sticky="ew")
         self.ttk.Button(
             ready,
             text="Test run - no changes",
@@ -310,8 +374,8 @@ class _GuiApp:
             font=("", 12, "bold"),
         ).grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 10))
         row += 1
-        row = self._field(parent, row, "Config file", None, button=("Browse", self._choose_env))
-        self.env_label = self.ttk.Label(parent, text=str(self.env_path), anchor="w")
+        row = self._field(parent, row, "Settings storage", None, button=("Import .env", self._choose_env))
+        self.env_label = self.ttk.Label(parent, text=self._settings_location_text(), anchor="w")
         self.env_label.grid(row=row - 1, column=1, sticky="ew", padx=6, pady=4)
         row = self._field(parent, row, "Timezone", "TIMEZONE")
         row = self._field(parent, row, "Search last days", "SEARCH_SINCE_DAYS")
@@ -378,12 +442,15 @@ class _GuiApp:
 
     def _choose_env(self) -> None:
         selected = self.filedialog.askopenfilename(
-            title="Choose app settings file",
+            title="Import settings from .env",
             filetypes=(("Environment files", "*.env"), ("All files", "*.*")),
         )
         if selected:
-            self.env_path = Path(selected)
-            self.env_label.configure(text=str(self.env_path))
+            if self.use_stored_settings:
+                import_env_to_store(selected)
+                self._log(f"Imported setup from {selected} into Credential Manager.")
+            else:
+                self.env_path = Path(selected)
             self._load_env_into_form()
 
     def _choose_file(self, key: str) -> None:
@@ -395,7 +462,7 @@ class _GuiApp:
             self.vars[key].set(selected)
 
     def _load_env_into_form(self) -> None:
-        config = load_config(self.env_path)
+        config = self._current_config()
         values = {
             "TIMEZONE": config.timezone,
             "EMAIL_PROVIDER": config.email_provider,
@@ -411,33 +478,42 @@ class _GuiApp:
             "GRAPH_CLIENT_ID": "" if config.graph_client_id == "14d82eec-204b-4c2f-b7e8-296a70dab67e" else config.graph_client_id,
             "GRAPH_TENANT": config.graph_tenant,
             "GRAPH_SCOPES": ",".join(config.graph_scopes),
-            "GRAPH_TOKEN_CACHE": _display_path(config.graph_token_cache, self.env_path),
-            "GOOGLE_CLIENT_SECRETS_PATH": _display_path(config.google_client_secrets_path, self.env_path),
-            "GOOGLE_TOKEN_CACHE": _display_path(config.google_token_cache, self.env_path),
+            "GRAPH_TOKEN_CACHE": _display_path(config.graph_token_cache, config.env_path),
+            "GOOGLE_CLIENT_SECRETS_PATH": _display_path(config.google_client_secrets_path, config.env_path),
+            "GOOGLE_TOKEN_CACHE": _display_path(config.google_token_cache, config.env_path),
             "CALENDAR_PROVIDER": config.calendar_provider,
             "CALENDAR_PROVIDER_LABEL": _label_for_value(CALENDAR_PROVIDER_LABELS, config.calendar_provider),
             "CALENDAR_NAME": config.calendar_name,
             "CALDAV_URL": config.caldav_url,
             "ICLOUD_USERNAME": config.icloud_username,
             "CALENDAR_REMINDER_MINUTES": ",".join(str(value) for value in config.reminder_minutes),
-            "DATABASE_PATH": _display_path(config.database_path, self.env_path),
-            "ICS_EXPORT_DIR": _display_path(config.ics_export_dir, self.env_path),
+            "DATABASE_PATH": _display_path(config.database_path, config.env_path),
+            "ICS_EXPORT_DIR": _display_path(config.ics_export_dir, config.env_path),
             "TASK_NAME": config.task_name,
             "TASK_INTERVAL_MINUTES": str(config.task_interval_minutes),
         }
         for key, value in values.items():
             self.vars[key].set(value)
+        self.env_label.configure(text=self._settings_location_text())
+        self._refresh_settings_summary()
         self._refresh_provider_ui()
 
     def _save_settings(self, log: bool = True) -> None:
         self._sync_provider_labels_to_values()
         updates = {key: self.vars[key].get().strip() for key in _ENV_KEYS if key in self.vars}
-        updates["ICLOUD_APP_PASSWORD"] = ""
-        updates["IMAP_PASSWORD"] = ""
-        self.env_path.parent.mkdir(parents=True, exist_ok=True)
-        self.env_path.write_text(_render_env(updates), encoding="utf-8")
+        if self.use_stored_settings:
+            save_stored_settings(updates)
+        else:
+            if self.env_path is None:
+                raise RuntimeError("No settings file is selected.")
+            updates["ICLOUD_APP_PASSWORD"] = ""
+            updates["IMAP_PASSWORD"] = ""
+            self.env_path.parent.mkdir(parents=True, exist_ok=True)
+            self.env_path.write_text(_render_env(updates), encoding="utf-8")
         if log:
-            self._log("Setup saved.")
+            self._log("Setup saved to Credential Manager." if self.use_stored_settings else "Setup saved.")
+        self._refresh_settings_summary()
+        self._refresh_provider_ui()
         self.status_var.set("Ready")
 
     def _sync_provider_labels_to_values(self) -> None:
@@ -462,8 +538,10 @@ class _GuiApp:
             self.email_signin_button.configure(text="Sign in with Google", state="normal")
             self.email_imap_frame.grid_remove()
         elif email_provider == "imap":
-            self.email_help_var.set("Use this for iCloud Mail or another mailbox. Enter the email address and app password.")
-            self.email_signin_button.configure(text="Password saved below", state="disabled")
+            self.email_help_var.set(
+                f"Use this for iCloud Mail or another mailbox. Email password: {_secret_status('IMAP_PASSWORD')}."
+            )
+            self.email_signin_button.configure(text="Password saved" if get_secret("IMAP_PASSWORD") else "Password needed below", state="disabled")
             self.email_imap_frame.grid()
         else:
             self.email_help_var.set("Uses the classic desktop Outlook profile on this computer.")
@@ -471,8 +549,13 @@ class _GuiApp:
             self.email_imap_frame.grid_remove()
 
         if calendar_provider == "icloud_caldav":
-            self.calendar_help_var.set("Use your Apple Account email and an app-specific password.")
-            self.calendar_signin_button.configure(text="Password saved below", state="disabled")
+            self.calendar_help_var.set(
+                f"Use your Apple Account email. iCloud app-specific password: {_secret_status('ICLOUD_APP_PASSWORD')}."
+            )
+            self.calendar_signin_button.configure(
+                text="Password saved" if get_secret("ICLOUD_APP_PASSWORD") else "Password needed below",
+                state="disabled",
+            )
             self.icloud_calendar_frame.grid()
         elif calendar_provider == "google_calendar":
             self.calendar_help_var.set("Use this when events should go to Google Calendar.")
@@ -498,6 +581,7 @@ class _GuiApp:
             self.messagebox.showerror("Could not save password", str(exc))
             return
         self.vars[var_key].set("")
+        self._refresh_provider_ui()
         self._log(success_message)
 
     def _email_sign_in(self) -> None:
@@ -525,7 +609,7 @@ class _GuiApp:
         self._run_worker("Google sign-in", self._auth_google_worker, extra_scopes or set())
 
     def _auth_graph_worker(self, extra_scopes: set[str]) -> None:
-        config = load_config(self.env_path)
+        config = self._current_config()
 
         def prompt(flow: dict) -> None:
             url = flow.get("verification_uri") or "https://www.microsoft.com/link"
@@ -545,7 +629,7 @@ class _GuiApp:
         self._log("Microsoft account connected.")
 
     def _auth_google_worker(self, extra_scopes: set[str]) -> None:
-        config = load_config(self.env_path)
+        config = self._current_config()
         scopes = set(extra_scopes)
         if config.email_provider == "gmail_oauth":
             scopes.add(GMAIL_READ_SCOPE)
@@ -562,7 +646,7 @@ class _GuiApp:
         self._run_worker("Find calendars", self._refresh_calendars_worker)
 
     def _refresh_calendars_worker(self) -> None:
-        config = load_config(self.env_path)
+        config = self._current_config()
         names = list_calendar_names(config)
         self.root.after(0, lambda: self.calendar_name_combo.configure(values=names))
         if names:
@@ -571,7 +655,7 @@ class _GuiApp:
             self._log("No cloud calendars were listed. You can still type a new calendar name.")
 
     def _check_calendar(self) -> None:
-        config = load_config(self.env_path)
+        config = self._current_config()
         exists = calendar_exists(config, config.calendar_name)
         if exists:
             self._log(f"Calendar access works: {config.calendar_name}")
@@ -579,7 +663,7 @@ class _GuiApp:
             self._log(f"Calendar was not found yet: {config.calendar_name}. It will be created during sync if the provider supports it.")
 
     def _run_once(self, dry_run: bool) -> None:
-        config = load_config(self.env_path)
+        config = self._current_config()
         options = SyncOptions(dry_run=dry_run, source="auto")
         run_sync(config, options)
 
@@ -602,7 +686,7 @@ class _GuiApp:
     def _scheduler_loop(self) -> None:
         while not self.scheduler_stop.is_set():
             try:
-                config = load_config(self.env_path)
+                config = self._current_config()
                 run_sync(config, SyncOptions(dry_run=False, source="auto"))
                 interval_seconds = max(1, config.task_interval_minutes) * 60
             except Exception as exc:
@@ -611,20 +695,24 @@ class _GuiApp:
             self.scheduler_stop.wait(interval_seconds)
 
     def _os_scheduler(self, print_only: bool, install: bool) -> None:
-        config = load_config(self.env_path)
+        config = self._current_config()
         if install:
             install_task(
                 task_name=config.task_name,
                 interval_minutes=config.task_interval_minutes,
-                env_path=self.env_path.resolve(),
+                env_path=None if self.use_stored_settings else self.env_path.resolve(),
                 write=True,
                 print_only=print_only,
+                stored_settings=self.use_stored_settings,
             )
         else:
             uninstall_task(config.task_name, print_only=print_only)
 
     def _open_config_folder(self) -> None:
-        webbrowser.open(self.env_path.resolve().parent.as_uri())
+        if self.use_stored_settings:
+            webbrowser.open(settings_base_dir().as_uri())
+        elif self.env_path is not None:
+            webbrowser.open(self.env_path.resolve().parent.as_uri())
 
     def _save_then_run(self, label: str, func, *args) -> None:
         self._save_settings(log=False)
@@ -685,34 +773,28 @@ class _GuiApp:
         self.scheduler_stop.set()
         self.root.destroy()
 
+    def _current_config(self):
+        if self.use_stored_settings:
+            return load_stored_config()
+        if self.env_path is None:
+            raise RuntimeError("No settings file is selected.")
+        return load_config(self.env_path)
 
-_ENV_KEYS = (
-    "TIMEZONE",
-    "EMAIL_PROVIDER",
-    "EMAIL_SENDER_HINTS",
-    "SEARCH_SINCE_DAYS",
-    "IMAP_MAX_MESSAGES",
-    "IMAP_PROVIDER",
-    "IMAP_HOST",
-    "IMAP_PORT",
-    "IMAP_USERNAME",
-    "IMAP_FOLDER",
-    "GRAPH_CLIENT_ID",
-    "GRAPH_TENANT",
-    "GRAPH_SCOPES",
-    "GRAPH_TOKEN_CACHE",
-    "GOOGLE_CLIENT_SECRETS_PATH",
-    "GOOGLE_TOKEN_CACHE",
-    "CALENDAR_PROVIDER",
-    "CALENDAR_NAME",
-    "CALDAV_URL",
-    "ICLOUD_USERNAME",
-    "CALENDAR_REMINDER_MINUTES",
-    "DATABASE_PATH",
-    "ICS_EXPORT_DIR",
-    "TASK_NAME",
-    "TASK_INTERVAL_MINUTES",
-)
+    def _settings_location_text(self) -> str:
+        if self.use_stored_settings:
+            return "Windows Credential Manager / OS keychain"
+        return str(self.env_path)
+
+    def _refresh_settings_summary(self) -> None:
+        if self.use_stored_settings:
+            self.settings_summary_var.set(
+                "Setup is saved in Windows Credential Manager. Password fields stay blank unless you want to replace a saved password."
+            )
+        else:
+            self.settings_summary_var.set(f"Using settings file: {self.env_path}")
+
+
+_ENV_KEYS = CONFIG_VALUE_KEYS
 
 
 def _render_env(values: dict[str, str]) -> str:
@@ -821,6 +903,10 @@ def _friendly_summary(line: str) -> str:
     if errors != "0":
         parts.append(f"problems {errors}")
     return "Done: " + ", ".join(parts) + "."
+
+
+def _secret_status(key: str) -> str:
+    return "saved in Credential Manager" if get_secret(key) else "not saved yet"
 
 
 def _timestamp() -> str:

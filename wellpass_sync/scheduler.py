@@ -11,20 +11,27 @@ import sys
 from pathlib import Path
 
 
-def build_task_action(env_path: Path, write: bool) -> str:
+def build_task_action(env_path: Path | None, write: bool, stored_settings: bool = False) -> str:
     project_root = _working_directory()
-    command = subprocess.list2cmdline(_sync_command(env_path, write))
+    command = subprocess.list2cmdline(_sync_command(env_path, write, stored_settings=stored_settings))
     return f'cmd.exe /c "cd /d {project_root} && {command}"'
 
 
-def install_task(task_name: str, interval_minutes: int, env_path: Path, write: bool, print_only: bool) -> None:
+def install_task(
+    task_name: str,
+    interval_minutes: int,
+    env_path: Path | None,
+    write: bool,
+    print_only: bool,
+    stored_settings: bool = False,
+) -> None:
     system = platform.system().lower()
     if system == "windows":
-        _install_windows_task(task_name, interval_minutes, env_path, write, print_only)
+        _install_windows_task(task_name, interval_minutes, env_path, write, print_only, stored_settings)
     elif system == "darwin":
-        _install_launch_agent(task_name, interval_minutes, env_path, write, print_only)
+        _install_launch_agent(task_name, interval_minutes, env_path, write, print_only, stored_settings)
     elif system == "linux":
-        _install_systemd_timer(task_name, interval_minutes, env_path, write, print_only)
+        _install_systemd_timer(task_name, interval_minutes, env_path, write, print_only, stored_settings)
     else:
         raise RuntimeError(f"Unsupported scheduler platform: {platform.system()}")
 
@@ -41,11 +48,15 @@ def uninstall_task(task_name: str, print_only: bool) -> None:
         raise RuntimeError(f"Unsupported scheduler platform: {platform.system()}")
 
 
-def _sync_command(env_path: Path, write: bool) -> list[str]:
+def _sync_command(env_path: Path | None, write: bool, stored_settings: bool = False) -> list[str]:
     if getattr(sys, "frozen", False):
-        args = [sys.executable, "run-once", "--env", str(env_path)]
+        args = [sys.executable, "run-once"]
     else:
-        args = [sys.executable, "-m", "wellpass_sync", "run-once", "--env", str(env_path)]
+        args = [sys.executable, "-m", "wellpass_sync", "run-once"]
+    if stored_settings:
+        args.append("--stored-settings")
+    elif env_path is not None:
+        args.extend(["--env", str(env_path)])
     if write:
         args.append("--write")
     return args
@@ -60,11 +71,12 @@ def _working_directory() -> Path:
 def _install_windows_task(
     task_name: str,
     interval_minutes: int,
-    env_path: Path,
+    env_path: Path | None,
     write: bool,
     print_only: bool,
+    stored_settings: bool,
 ) -> None:
-    action = build_task_action(env_path, write)
+    action = build_task_action(env_path, write, stored_settings=stored_settings)
     command = [
         "schtasks.exe",
         "/Create",
@@ -101,9 +113,10 @@ def _uninstall_windows_task(task_name: str, print_only: bool) -> None:
 def _install_launch_agent(
     task_name: str,
     interval_minutes: int,
-    env_path: Path,
+    env_path: Path | None,
     write: bool,
     print_only: bool,
+    stored_settings: bool,
 ) -> None:
     label = _task_label(task_name)
     plist_path = _launch_agent_path(task_name)
@@ -111,7 +124,7 @@ def _install_launch_agent(
     log_dir = Path.home() / "Library" / "Logs"
     payload = {
         "Label": label,
-        "ProgramArguments": _sync_command(env_path, write),
+        "ProgramArguments": _sync_command(env_path, write, stored_settings=stored_settings),
         "WorkingDirectory": str(project_root),
         "StartInterval": max(1, interval_minutes) * 60,
         "RunAtLoad": True,
@@ -145,9 +158,10 @@ def _uninstall_launch_agent(task_name: str, print_only: bool) -> None:
 def _install_systemd_timer(
     task_name: str,
     interval_minutes: int,
-    env_path: Path,
+    env_path: Path | None,
     write: bool,
     print_only: bool,
+    stored_settings: bool,
 ) -> None:
     if not shutil.which("systemctl"):
         raise RuntimeError("systemd user timers require systemctl on PATH")
@@ -156,7 +170,7 @@ def _install_systemd_timer(
     service_path = _systemd_user_dir() / f"{label}.service"
     timer_path = _systemd_user_dir() / f"{label}.timer"
     project_root = _working_directory()
-    command = shlex.join(_sync_command(env_path, write))
+    command = shlex.join(_sync_command(env_path, write, stored_settings=stored_settings))
     service = "\n".join(
         [
             "[Unit]",

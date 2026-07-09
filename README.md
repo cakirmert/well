@@ -71,7 +71,11 @@ Not released to App Store or Play Store yet:
 
 The `Advanced` tab is only for troubleshooting or unusual providers.
 
-The app creates its own local config automatically:
+The packaged GUI stores normal setup in the OS keychain/Credential Manager. Passwords are separate keychain entries; non-secret choices such as provider, Apple Account email, calendar name, and runtime paths are stored as app settings.
+
+For compatibility, the app can still import or use a `.env` file. If no saved setup exists, the GUI looks for a `.env` next to the app or in the parent folder and imports it into Credential Manager.
+
+Legacy config file locations:
 
 - Windows: `%APPDATA%\Wellpass Calendar Sync\.env`
 - macOS: `~/Library/Application Support/Wellpass Calendar Sync/.env`
@@ -126,11 +130,13 @@ When installed from the packaged app, the scheduler reuses that same app executa
 
 ## Passwords and Sign-In
 
-Passwords are stored in the OS keychain:
+Setup and passwords are stored in the OS keychain:
 
 - Windows: Windows Credential Manager.
 - macOS: Keychain.
 - Linux: Secret Service / KWallet, depending on the desktop.
+
+The GUI does not show saved passwords. The password boxes stay blank unless you want to replace a saved password.
 
 For iCloud Calendar, use an Apple app-specific password, not your normal Apple Account password.
 

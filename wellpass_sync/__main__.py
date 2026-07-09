@@ -13,6 +13,7 @@ from .graph_mail import get_graph_access_token
 from .parser import parse_booking_email
 from .scheduler import install_task, uninstall_task
 from .secrets import SECRET_KEYS, delete_secret, set_secret
+from .settings_store import import_env_to_store, load_stored_config
 from .sync import SyncOptions, run_sync
 
 
@@ -35,10 +36,12 @@ def main(argv: list[str] | None = None) -> int:
         "check-calendar", help="Check whether an iCloud CalDAV calendar exists without writing"
     )
     check_calendar_parser.add_argument("--env", default=".env")
+    check_calendar_parser.add_argument("--stored-settings", action="store_true", help="Use settings saved in the OS keychain")
     check_calendar_parser.add_argument("--calendar-name", required=True)
 
     list_calendars_parser = subparsers.add_parser("list-calendars", help="List calendars for the configured target")
     list_calendars_parser.add_argument("--env", default=".env")
+    list_calendars_parser.add_argument("--stored-settings", action="store_true", help="Use settings saved in the OS keychain")
 
     gui_parser = subparsers.add_parser("gui", help="Open the desktop GUI")
     gui_parser.add_argument("--env", default=None)
@@ -47,11 +50,13 @@ def main(argv: list[str] | None = None) -> int:
         "auth-graph", help="Sign in to Microsoft Graph and cache a local token"
     )
     auth_graph_parser.add_argument("--env", default=".env")
+    auth_graph_parser.add_argument("--stored-settings", action="store_true", help="Use settings saved in the OS keychain")
 
     auth_google_parser = subparsers.add_parser(
         "auth-google", help="Sign in to Google and cache a local OAuth token"
     )
     auth_google_parser.add_argument("--env", default=".env")
+    auth_google_parser.add_argument("--stored-settings", action="store_true", help="Use settings saved in the OS keychain")
     auth_google_parser.add_argument(
         "--scope",
         action="append",
@@ -71,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
 
     install_parser = subparsers.add_parser("install-task", help="Install an OS scheduler job")
     install_parser.add_argument("--env", default=".env")
+    install_parser.add_argument("--stored-settings", action="store_true", help="Use settings saved in the OS keychain")
     install_parser.add_argument("--task-name")
     install_parser.add_argument("--interval-minutes", type=int)
     install_parser.add_argument("--write", action="store_true", help="Scheduled job writes to calendar")
@@ -78,13 +84,17 @@ def main(argv: list[str] | None = None) -> int:
 
     uninstall_parser = subparsers.add_parser("uninstall-task", help="Remove the OS scheduler job")
     uninstall_parser.add_argument("--env", default=".env")
+    uninstall_parser.add_argument("--stored-settings", action="store_true", help="Use settings saved in the OS keychain")
     uninstall_parser.add_argument("--task-name")
     uninstall_parser.add_argument("--print-only", action="store_true")
+
+    import_env_parser = subparsers.add_parser("import-env", help="Import a .env setup into the OS keychain settings store")
+    import_env_parser.add_argument("--env", default=".env")
 
     args = parser.parse_args(argv)
 
     if args.command in {"run-once", "sync"}:
-        config = load_config(args.env)
+        config = _load_selected_config(args)
         if args.calendar_name:
             config = replace(config, calendar_name=args.calendar_name)
         dry_run = config.dry_run
@@ -134,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "check-calendar":
-        config = load_config(args.env)
+        config = _load_selected_config(args)
         try:
             exists = calendar_exists(config, args.calendar_name)
         except ValueError as exc:
@@ -147,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.command == "list-calendars":
-        config = load_config(args.env)
+        config = _load_selected_config(args)
         try:
             names = list_calendar_names(config)
         except (RuntimeError, ValueError) as exc:
@@ -167,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if args.command == "auth-graph":
-        config = load_config(args.env)
+        config = _load_selected_config(args)
         try:
             get_graph_access_token(config)
         except (RuntimeError, ValueError) as exc:
@@ -179,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "auth-google":
         from .google_auth import GMAIL_READ_SCOPE, GOOGLE_CALENDAR_SCOPE, get_google_credentials
 
-        config = load_config(args.env)
+        config = _load_selected_config(args)
         scope_groups = set(args.scope or ["gmail", "calendar"])
         scopes = []
         if "gmail" in scope_groups:
@@ -212,22 +222,28 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.command == "install-task":
-        config = load_config(args.env)
+        config = _load_selected_config(args)
         install_task(
             task_name=args.task_name or config.task_name,
             interval_minutes=args.interval_minutes or config.task_interval_minutes,
-            env_path=Path(args.env).resolve(),
+            env_path=None if args.stored_settings else Path(args.env).resolve(),
             write=args.write,
             print_only=args.print_only,
+            stored_settings=args.stored_settings,
         )
         return 0
 
     if args.command == "uninstall-task":
-        config = load_config(args.env)
+        config = _load_selected_config(args)
         uninstall_task(
             task_name=args.task_name or config.task_name,
             print_only=args.print_only,
         )
+        return 0
+
+    if args.command == "import-env":
+        import_env_to_store(args.env)
+        print("Imported settings into the OS keychain.")
         return 0
 
     parser.error(f"Unknown command {args.command}")
@@ -241,8 +257,15 @@ def _configure_stdio() -> None:
             reconfigure(encoding="utf-8", errors="replace")
 
 
+def _load_selected_config(args) -> object:
+    if getattr(args, "stored_settings", False):
+        return load_stored_config()
+    return load_config(args.env)
+
+
 def _add_common_sync_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--env", default=".env")
+    parser.add_argument("--stored-settings", action="store_true", help="Use settings saved in the OS keychain")
     parser.add_argument("--source", choices=["auto", "graph", "gmail_oauth", "imap", "outlook", "samples"], default="auto")
     parser.add_argument("--eml-dir", default="samples")
     parser.add_argument("--dry-run", action="store_true", help="Force dry run")

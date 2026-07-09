@@ -22,6 +22,10 @@ class SchedulerTests(unittest.TestCase):
                     scheduler._sync_command(Path("config.env"), write=True),
                     [str(exe), "run-once", "--env", "config.env", "--write"],
                 )
+                self.assertEqual(
+                    scheduler._sync_command(None, write=True, stored_settings=True),
+                    [str(exe), "run-once", "--stored-settings", "--write"],
+                )
 
 
 if __name__ == "__main__":
