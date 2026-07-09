@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from dataclasses import replace
 from datetime import date
@@ -251,10 +252,27 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _configure_stdio() -> None:
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if callable(reconfigure):
+    sys.stdout = _safe_output_stream(sys.stdout)
+    sys.stderr = _safe_output_stream(sys.stderr)
+
+
+def _safe_output_stream(stream):
+    if stream is None:
+        return open(os.devnull, "w", encoding="utf-8", errors="replace")
+
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        try:
             reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            return open(os.devnull, "w", encoding="utf-8", errors="replace")
+
+    try:
+        stream.write("")
+        stream.flush()
+    except (OSError, ValueError):
+        return open(os.devnull, "w", encoding="utf-8", errors="replace")
+    return stream
 
 
 def _load_selected_config(args) -> object:
